@@ -12,9 +12,16 @@ type ExternalDocumentationObject = {
   url: string
 }
 
+type SchemaObjectType =
+  | 'string'
+  | 'number'
+  | 'integer'
+  | 'boolean'
+  | 'object'
+  | 'array'
 export type SchemaObject = {
   title?: string
-  type?: 'string' | 'number' | 'integer' | 'boolean' | 'object' | 'array'
+  type?: SchemaObjectType | [SchemaObjectType, null]
   format?: string
   nullable?: boolean
   description?: string

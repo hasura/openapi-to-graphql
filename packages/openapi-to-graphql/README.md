@@ -21,7 +21,7 @@ Note that [`GraphQL.js`](https://github.com/graphql/graphql-js) is a [peer depen
 
 ## Usage
 
-The basic way to use OpenAPI-to-GraphQL is to pass an OpenAPI Specification (OAS; version 2.0 or 3.0.x) to the `generateGraphQLSchema` function. The function returns a promise that resolves on an object containing the generated GraphQL schema as well as a report about possible issues when generating the schema:
+The basic way to use OpenAPI-to-GraphQL is to pass an OpenAPI Specification (OAS; version 2.0, 3.0.x or 3.1) to the `generateGraphQLSchema` function. The function returns a promise that resolves on an object containing the generated GraphQL schema as well as a report about possible issues when generating the schema:
 
 ```javascript
 const { createGraphQLSchema } = require('openapi-to-graphql')
@@ -146,6 +146,7 @@ createGraphQLSchema(oas[, options])
 The options object can contain the following properties:
 
 - `strict` (type: `boolean`, default: `false`): OpenAPI-to-GraphQL generally tries to produce a working GraphQL schema for a given OAS if the strict mode is disabled. If OpenAPI-to-GraphQL cannot fully translate a given OAS (e.g., because data schema definitions are incomplete or there are name collusions that cannot be resolved), `createGraphQLSchema` will by default degrade gracefully and produce a partial GraphQL schema. OpenAPI-to-GraphQL will log warnings (given logging is enabled). If the `strict` mode is enabled, however, `createGraphQLSchema` will throw an error if it cannot create a GraphQL schema matching the given OAS perfectly.
+- `softValidation` (type: `boolean`, default: `false`): OpenAPI-to-GraphQL will by default validate the given OAS before creating a GraphQL schema. If the `softValidation` mode is enabled, however, `createGraphQLSchema` will not validate the given OAS before creating a GraphQL schema. This is useful if you want to create a GraphQL schema for an OAS that is not fully compliant with the OpenAPI Specification. Errors will be added to the report object.
 
 ***
 
@@ -203,7 +204,7 @@ Authentication options:
 
 Validation options:
 
-- `oasValidatorOptions` (type: `object`, default: `{}`): We use the [oas-validator](https://www.npmjs.com/package/oas-validator) library to validate Swaggers/OASs. We expose the options so that users can have more control over validation. See [here](https://github.com/Mermade/oas-kit/blob/master/docs/options.md) for more information.
+- `oasValidatorOptions` (type: `object`, default: `{}`): We use the [@readme/openapi-parser](https://www.npmjs.com/package/@readme/openapi-parser) library to validate Swaggers/OASs. We expose the options so that users can have more control over validation. See [here](https://apitools.dev/swagger-parser/docs/options.html) for more information.
 
 - `swagger2OpenAPIOptions` (type: `object`, default: `{}`): We use the [swagger2openapi](https://www.npmjs.com/package/swagger2openapi) library to validate Swaggers/OASs. We expose the options so that users can have more control over validation. See [here](https://github.com/Mermade/oas-kit/blob/master/docs/options.md) for more information.
 

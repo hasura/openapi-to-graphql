@@ -32,6 +32,7 @@ import {
   ProcessedSecurityScheme
 } from './types/preprocessing_data'
 import { InternalOptions } from './types/options'
+import OpenAPIParser from '@readme/openapi-parser'
 
 // Imports:
 import * as Swagger2OpenAPI from 'swagger2openapi'
@@ -94,6 +95,15 @@ export enum OAS_GRAPHQL_EXTENSIONS {
   EnumMapping = 'x-graphql-enum-mapping'
 }
 
+const getType = (type: string | [string, null]): string | null => {
+  if (typeof type === 'string') {
+    return type
+  } else if (Array.isArray(type)) {
+    return type[0]
+  }
+  return type
+}
+
 /**
  * Given an HTTP method, convert it to the HTTP_METHODS enum
  */
@@ -139,8 +149,9 @@ export function isOas3(spec: any): spec is Oas3 {
  */
 export async function getValidOAS3(
   spec: Oas2 | Oas3,
-  oasValidatorOptions: object,
-  swagger2OpenAPIOptions: object
+  oasValidatorOptions: OpenAPIParser.Options,
+  swagger2OpenAPIOptions: object,
+  softValidate: boolean = false
 ): Promise<Oas3> {
   // CASE: translate
   if (isOas2(spec)) {
@@ -161,7 +172,9 @@ export async function getValidOAS3(
     // CASE: validate
   } else if (isOas3(spec)) {
     preprocessingLog(`Received OpenAPI Specification - going to validate...`)
-    await OASValidator.validate(spec, oasValidatorOptions)
+    if (!softValidate) {
+      await OpenAPIParser.validate(spec, oasValidatorOptions)
+    }
   } else {
     throw new Error(`Invalid specification provided`)
   }
@@ -267,6 +280,29 @@ export function countOperationsWithPayload(oas: Oas3): number {
  */
 export function resolveRef<T = any>(ref: string, oas: Oas3): T {
   return jsonptr.JsonPointer.get(oas, ref) as T
+}
+
+export const resolveAnyOf = (
+  schema: SchemaObject | ReferenceObject
+): SchemaObject | ReferenceObject => {
+  const collapsedSchema: SchemaObject = JSON.parse(JSON.stringify(schema))
+
+  if ('anyOf' in collapsedSchema) {
+    const types = collapsedSchema.anyOf.map((type) => {
+      if ('$ref' in type) {
+        return 'object'
+      }
+      return type.type
+    })
+
+    if (types.length === 1) {
+      collapsedSchema.type = types[0]
+    } else {
+      collapsedSchema.type = 'object'
+    }
+  }
+
+  return collapsedSchema
 }
 
 /**
@@ -579,8 +615,10 @@ export function getSchemaTargetGraphQLType<TSource, TContext, TArgs>(
     return TargetGraphQLType.enum
   }
 
+  const type = getType(schema.type)
+
   // CASE: object
-  if (schema.type === 'object' || typeof schema.properties === 'object') {
+  if (type === 'object' || typeof schema.properties === 'object') {
     // TODO: additionalProperties is more like a flag than a type itself
     // CASE: arbitrary JSON
     if (typeof schema.additionalProperties === 'object') {
@@ -591,20 +629,20 @@ export function getSchemaTargetGraphQLType<TSource, TContext, TArgs>(
   }
 
   // CASE: array
-  if (schema.type === 'array' || 'items' in schema) {
+  if (type === 'array' || 'items' in schema) {
     return TargetGraphQLType.list
   }
 
   // Special edge cases involving the schema format
   if (typeof schema.format === 'string') {
-    if (schema.type === 'integer' && schema.format === 'int64') {
+    if (type === 'integer' && schema.format === 'int64') {
       return TargetGraphQLType.bigint
       // CASE: file upload
-    } else if (schema.type === 'string' && schema.format === 'binary') {
+    } else if (type === 'string' && schema.format === 'binary') {
       return TargetGraphQLType.upload
       // CASE: id
     } else if (
-      schema.type === 'string' &&
+      type === 'string' &&
       (schema.format === 'uuid' ||
         // Custom ID format
         (Array.isArray(data.options.idFormats) &&
@@ -614,7 +652,7 @@ export function getSchemaTargetGraphQLType<TSource, TContext, TArgs>(
     }
   }
 
-  switch (schema.type) {
+  switch (type) {
     case 'string':
       return TargetGraphQLType.string
 
@@ -776,8 +814,12 @@ function GetOneOfTargetGraphQLType<TSource, TContext, TArgs>(
   // Target GraphQL types of all the member schemas
   const memberTargetTypes: TargetGraphQLType[] = []
   schema.oneOf.forEach((memberSchema) => {
-    const collapsedMemberSchema = resolveAllOf(memberSchema, {}, data, oas);
-    const memberTargetType = getSchemaTargetGraphQLType(collapsedMemberSchema, data, oas)
+    const collapsedMemberSchema = resolveAllOf(memberSchema, {}, data, oas)
+    const memberTargetType = getSchemaTargetGraphQLType(
+      collapsedMemberSchema,
+      data,
+      oas
+    )
 
     if (memberTargetType !== null) {
       memberTargetTypes.push(memberTargetType)
@@ -828,9 +870,7 @@ function GetOneOfTargetGraphQLType<TSource, TContext, TArgs>(
  * components as well as an updated list of paths where the common prefix was
  * removed.
  */
-function extractBasePath(
-  paths: string[]
-): {
+function extractBasePath(paths: string[]): {
   basePath: string
   updatedPaths: string[]
 } {
@@ -970,7 +1010,7 @@ export function getRequestSchemaAndNames(
           payloadContentType === 'application/json' ||
           payloadContentType === '*/*' ||
           payloadContentType === 'application/x-www-form-urlencoded' ||
-            payloadContentType === 'multipart/form-data'
+          payloadContentType === 'multipart/form-data'
         ) {
           // Name extracted from a reference, if applicable
           let fromRef: string
@@ -1368,9 +1408,9 @@ export function getServers(
  * Returns a map of security scheme definitions, identified by keys. Resolves
  * possible references.
  */
-export function getSecuritySchemes(
-  oas: Oas3
-): { [schemeKey: string]: SecuritySchemeObject } {
+export function getSecuritySchemes(oas: Oas3): {
+  [schemeKey: string]: SecuritySchemeObject
+} {
   // Collect all security schemes:
   const securitySchemes: { [schemeKey: string]: SecuritySchemeObject } = {}
   if (

@@ -27,6 +27,7 @@ import debug from 'debug'
 import { handleWarning, getCommonPropertyNames, MitigationTypes } from './utils'
 import { GraphQLOperationType } from './types/graphql'
 import { methodToHttpMethod } from './oas_3_tools'
+import OpenAPIParser from '@readme/openapi-parser'
 
 const preprocessingLog = debug('preprocessing')
 
@@ -194,10 +195,10 @@ function processOperation<TSource, TContext, TArgs>(
  * Extract information from the OAS and put it inside a data structure that
  * is easier for OpenAPI-to-GraphQL to use
  */
-export function preprocessOas<TSource, TContext, TArgs>(
+export async function preprocessOas<TSource, TContext, TArgs>(
   oass: Oas3[],
   options: InternalOptions<TSource, TContext, TArgs>
-): PreprocessingData<TSource, TContext, TArgs> {
+): Promise<PreprocessingData<TSource, TContext, TArgs>> {
   const data: PreprocessingData<TSource, TContext, TArgs> = {
     operations: {},
     callbackOperations: {},
@@ -213,260 +214,278 @@ export function preprocessOas<TSource, TContext, TArgs>(
     oass
   }
 
-  oass.forEach((oas) => {
-    // Store stats on OAS:
-    data.options.report.numOps += Oas3Tools.countOperations(oas)
-    data.options.report.numOpsMutation += Oas3Tools.countOperationsMutation(oas)
-    data.options.report.numOpsQuery += Oas3Tools.countOperationsQuery(oas)
-    if (data.options.createSubscriptionsFromCallbacks) {
-      data.options.report.numOpsSubscription += Oas3Tools.countOperationsSubscription(
-        oas
+  await Promise.all(
+    oass.map(async (oas) => {
+      // Store stats on OAS:
+      try {
+        await OpenAPIParser.validate(oas)
+      } catch (e) {
+        data.options.report.validationErrors = (
+          data.options.report.validationErrors || []
+        ).concat(e.message)
+      }
+      data.options.report.numOps += Oas3Tools.countOperations(oas)
+      data.options.report.numOpsMutation +=
+        Oas3Tools.countOperationsMutation(oas)
+      data.options.report.numOpsQuery += Oas3Tools.countOperationsQuery(oas)
+      if (data.options.createSubscriptionsFromCallbacks) {
+        data.options.report.numOpsSubscription +=
+          Oas3Tools.countOperationsSubscription(oas)
+      } else {
+        data.options.report.numOpsSubscription = 0
+      }
+
+      // Get security schemes
+      const currentSecurity = getProcessedSecuritySchemes(oas, data)
+      const commonSecurityPropertyName = getCommonPropertyNames(
+        data.security,
+        currentSecurity
       )
-    } else {
-      data.options.report.numOpsSubscription = 0
-    }
-
-    // Get security schemes
-    const currentSecurity = getProcessedSecuritySchemes(oas, data)
-    const commonSecurityPropertyName = getCommonPropertyNames(
-      data.security,
-      currentSecurity
-    )
-    commonSecurityPropertyName.forEach((propertyName) => {
-      handleWarning({
-        mitigationType: MitigationTypes.DUPLICATE_SECURITY_SCHEME,
-        message: `Multiple OASs share security schemes with the same name '${propertyName}'`,
-        mitigationAddendum:
-          `The security scheme from OAS ` +
-          `'${currentSecurity[propertyName].oas.info.title}' will be ignored`,
-        data,
-        log: preprocessingLog
-      })
-    })
-
-    // Do not overwrite preexisting security schemes
-    data.security = { ...currentSecurity, ...data.security }
-
-    // Process all operations
-    for (let path in oas.paths) {
-      const pathItem =
-        typeof oas.paths[path].$ref === 'string'
-          ? (Oas3Tools.resolveRef(oas.paths[path].$ref, oas) as PathItemObject)
-          : oas.paths[path]
-
-      Object.keys(pathItem)
-        .filter((pathFields) => {
-          /**
-           * Get only method fields that contain operation objects (e.g. "get",
-           * "put", "post", "delete", etc.)
-           *
-           * Can also contain other fields such as summary or description
-           */
-          return Oas3Tools.isHttpMethod(pathFields)
+      commonSecurityPropertyName.forEach((propertyName) => {
+        handleWarning({
+          mitigationType: MitigationTypes.DUPLICATE_SECURITY_SCHEME,
+          message: `Multiple OASs share security schemes with the same name '${propertyName}'`,
+          mitigationAddendum:
+            `The security scheme from OAS ` +
+            `'${currentSecurity[propertyName].oas.info.title}' will be ignored`,
+          data,
+          log: preprocessingLog
         })
-        .forEach((rawMethod) => {
-          const operationString =
-            oass.length === 1
-              ? Oas3Tools.formatOperationString(rawMethod, path)
-              : Oas3Tools.formatOperationString(rawMethod, path, oas.info.title)
+      })
 
-          let httpMethod: Oas3Tools.HTTP_METHODS
-          try {
-            httpMethod = methodToHttpMethod(rawMethod)
-          } catch (e) {
-            handleWarning({
-              mitigationType: MitigationTypes.INVALID_HTTP_METHOD,
-              message: `Invalid HTTP method '${rawMethod}' in operation '${operationString}'`,
-              data,
-              log: preprocessingLog
-            })
+      // Do not overwrite preexisting security schemes
+      data.security = { ...currentSecurity, ...data.security }
 
-            return
-          }
+      // Process all operations
+      for (let path in oas.paths) {
+        const pathItem =
+          typeof oas.paths[path].$ref === 'string'
+            ? (Oas3Tools.resolveRef(
+                oas.paths[path].$ref,
+                oas
+              ) as PathItemObject)
+            : oas.paths[path]
 
-          const operation = pathItem[httpMethod] as OperationObject
-
-          let operationType =
-            httpMethod === Oas3Tools.HTTP_METHODS.get
-              ? GraphQLOperationType.Query
-              : GraphQLOperationType.Mutation
-
-          // Option selectQueryOrMutationField can override operation type
-          if (
-            typeof options?.selectQueryOrMutationField?.[oas.info.title]?.[
-              path
-            ]?.[httpMethod] === 'number'
-            // This is an enum, which is an integer value
-          ) {
-            operationType =
-              options.selectQueryOrMutationField[oas.info.title][path][
-                httpMethod
-              ] === GraphQLOperationType.Mutation
-                ? GraphQLOperationType.Mutation
-                : GraphQLOperationType.Query
-          }
-
-          const operationData = processOperation(
-            path,
-            httpMethod,
-            operationString,
-            operationType,
-            operation,
-            pathItem,
-            oas,
-            data,
-            options
-          )
-
-          if (typeof operationData === 'object') {
+        Object.keys(pathItem)
+          .filter((pathFields) => {
             /**
-             * Handle operationId property name collision
-             * May occur if multiple OAS are provided
+             * Get only method fields that contain operation objects (e.g. "get",
+             * "put", "post", "delete", etc.)
+             *
+             * Can also contain other fields such as summary or description
              */
-            if (!(operationData.operationId in data.operations)) {
-              data.operations[operationData.operationId] = operationData
-            } else {
+            return Oas3Tools.isHttpMethod(pathFields)
+          })
+          .forEach((rawMethod) => {
+            const operationString =
+              oass.length === 1
+                ? Oas3Tools.formatOperationString(rawMethod, path)
+                : Oas3Tools.formatOperationString(
+                    rawMethod,
+                    path,
+                    oas.info.title
+                  )
+
+            let httpMethod: Oas3Tools.HTTP_METHODS
+            try {
+              httpMethod = methodToHttpMethod(rawMethod)
+            } catch (e) {
               handleWarning({
-                mitigationType: MitigationTypes.DUPLICATE_OPERATIONID,
-                message: `Multiple OASs share operations with the same operationId '${operationData.operationId}'`,
-                mitigationAddendum: `The operation from the OAS '${operationData.oas.info.title}' will be ignored`,
+                mitigationType: MitigationTypes.INVALID_HTTP_METHOD,
+                message: `Invalid HTTP method '${rawMethod}' in operation '${operationString}'`,
                 data,
                 log: preprocessingLog
               })
 
               return
             }
-          }
 
-          // Process all callbacks
-          if (
-            data.options.createSubscriptionsFromCallbacks &&
-            operation.callbacks
-          ) {
-            Object.entries(operation.callbacks).forEach(
-              ([callbackName, callbackObjectOrRef]) => {
-                let callback: CallbackObject
+            const operation = pathItem[httpMethod] as OperationObject
 
-                if (
-                  '$ref' in callbackObjectOrRef &&
-                  typeof callbackObjectOrRef.$ref === 'string'
-                ) {
-                  callback = Oas3Tools.resolveRef(callbackObjectOrRef.$ref, oas)
-                } else {
-                  callback = callbackObjectOrRef as CallbackObject
-                }
+            let operationType =
+              httpMethod === Oas3Tools.HTTP_METHODS.get
+                ? GraphQLOperationType.Query
+                : GraphQLOperationType.Mutation
 
-                Object.entries(callback).forEach(
-                  ([callbackExpression, callbackPathItem]) => {
-                    const resolvedCallbackPathItem = !(
-                      '$ref' in callbackPathItem
+            // Option selectQueryOrMutationField can override operation type
+            if (
+              typeof options?.selectQueryOrMutationField?.[oas.info.title]?.[
+                path
+              ]?.[httpMethod] === 'number'
+              // This is an enum, which is an integer value
+            ) {
+              operationType =
+                options.selectQueryOrMutationField[oas.info.title][path][
+                  httpMethod
+                ] === GraphQLOperationType.Mutation
+                  ? GraphQLOperationType.Mutation
+                  : GraphQLOperationType.Query
+            }
+
+            const operationData = processOperation(
+              path,
+              httpMethod,
+              operationString,
+              operationType,
+              operation,
+              pathItem,
+              oas,
+              data,
+              options
+            )
+
+            if (typeof operationData === 'object') {
+              /**
+               * Handle operationId property name collision
+               * May occur if multiple OAS are provided
+               */
+              if (!(operationData.operationId in data.operations)) {
+                data.operations[operationData.operationId] = operationData
+              } else {
+                handleWarning({
+                  mitigationType: MitigationTypes.DUPLICATE_OPERATIONID,
+                  message: `Multiple OASs share operations with the same operationId '${operationData.operationId}'`,
+                  mitigationAddendum: `The operation from the OAS '${operationData.oas.info.title}' will be ignored`,
+                  data,
+                  log: preprocessingLog
+                })
+
+                return
+              }
+            }
+
+            // Process all callbacks
+            if (
+              data.options.createSubscriptionsFromCallbacks &&
+              operation.callbacks
+            ) {
+              Object.entries(operation.callbacks).forEach(
+                ([callbackName, callbackObjectOrRef]) => {
+                  let callback: CallbackObject
+
+                  if (
+                    '$ref' in callbackObjectOrRef &&
+                    typeof callbackObjectOrRef.$ref === 'string'
+                  ) {
+                    callback = Oas3Tools.resolveRef(
+                      callbackObjectOrRef.$ref,
+                      oas
                     )
-                      ? callbackPathItem
-                      : Oas3Tools.resolveRef(callbackPathItem.$ref, oas)
+                  } else {
+                    callback = callbackObjectOrRef as CallbackObject
+                  }
 
-                    const callbackOperationObjectMethods = Object.keys(
-                      resolvedCallbackPathItem
-                    ).filter((objectKey) => {
-                      /**
-                       * Get only fields that contain operation objects
-                       *
-                       * Can also contain other fields such as summary or description
-                       */
-                      return Oas3Tools.isHttpMethod(objectKey)
-                    })
-
-                    if (callbackOperationObjectMethods.length > 0) {
-                      if (callbackOperationObjectMethods.length > 1) {
-                        handleWarning({
-                          mitigationType:
-                            MitigationTypes.CALLBACKS_MULTIPLE_OPERATION_OBJECTS,
-                          message: `Callback '${callbackExpression}' on operation '${operationString}' has multiple operation objects with the methods '${callbackOperationObjectMethods}'. OpenAPI-to-GraphQL can only utilize one of these operation objects.`,
-                          mitigationAddendum: `The operation with the method '${callbackOperationObjectMethods[0]}' will be selected and all others will be ignored.`,
-                          data,
-                          log: preprocessingLog
-                        })
-                      }
-
-                      // Select only one of the operation object methods
-                      const callbackRawMethod =
-                        callbackOperationObjectMethods[0]
-
-                      const callbackOperationString =
-                        oass.length === 1
-                          ? Oas3Tools.formatOperationString(
-                              httpMethod,
-                              callbackName
-                            )
-                          : Oas3Tools.formatOperationString(
-                              httpMethod,
-                              callbackName,
-                              oas.info.title
-                            )
-
-                      let callbackHttpMethod: Oas3Tools.HTTP_METHODS
-
-                      try {
-                        callbackHttpMethod = methodToHttpMethod(
-                          callbackRawMethod
-                        )
-                      } catch (e) {
-                        handleWarning({
-                          mitigationType: MitigationTypes.INVALID_HTTP_METHOD,
-                          message: `Invalid HTTP method '${rawMethod}' in callback '${callbackOperationString}' in operation '${operationString}'`,
-                          data,
-                          log: preprocessingLog
-                        })
-
-                        return
-                      }
-
-                      const callbackOperation = processOperation(
-                        callbackExpression,
-                        callbackHttpMethod,
-                        callbackOperationString,
-                        GraphQLOperationType.Subscription,
-                        resolvedCallbackPathItem[callbackHttpMethod],
-                        callbackPathItem,
-                        oas,
-                        data,
-                        options
+                  Object.entries(callback).forEach(
+                    ([callbackExpression, callbackPathItem]) => {
+                      const resolvedCallbackPathItem = !(
+                        '$ref' in callbackPathItem
                       )
+                        ? callbackPathItem
+                        : Oas3Tools.resolveRef(callbackPathItem.$ref, oas)
 
-                      if (callbackOperation) {
+                      const callbackOperationObjectMethods = Object.keys(
+                        resolvedCallbackPathItem
+                      ).filter((objectKey) => {
                         /**
-                         * Handle operationId property name collision
-                         * May occur if multiple OAS are provided
+                         * Get only fields that contain operation objects
+                         *
+                         * Can also contain other fields such as summary or description
                          */
-                        if (
-                          callbackOperation &&
-                          !(
-                            callbackOperation.operationId in
-                            data.callbackOperations
-                          )
-                        ) {
-                          data.callbackOperations[
-                            callbackOperation.operationId
-                          ] = callbackOperation
-                        } else {
+                        return Oas3Tools.isHttpMethod(objectKey)
+                      })
+
+                      if (callbackOperationObjectMethods.length > 0) {
+                        if (callbackOperationObjectMethods.length > 1) {
                           handleWarning({
                             mitigationType:
-                              MitigationTypes.DUPLICATE_OPERATIONID,
-                            message: `Multiple OASs share callback operations with the same operationId '${callbackOperation.operationId}'`,
-                            mitigationAddendum: `The callback operation from the OAS '${operationData.oas.info.title}' will be ignored`,
+                              MitigationTypes.CALLBACKS_MULTIPLE_OPERATION_OBJECTS,
+                            message: `Callback '${callbackExpression}' on operation '${operationString}' has multiple operation objects with the methods '${callbackOperationObjectMethods}'. OpenAPI-to-GraphQL can only utilize one of these operation objects.`,
+                            mitigationAddendum: `The operation with the method '${callbackOperationObjectMethods[0]}' will be selected and all others will be ignored.`,
                             data,
                             log: preprocessingLog
                           })
                         }
+
+                        // Select only one of the operation object methods
+                        const callbackRawMethod =
+                          callbackOperationObjectMethods[0]
+
+                        const callbackOperationString =
+                          oass.length === 1
+                            ? Oas3Tools.formatOperationString(
+                                httpMethod,
+                                callbackName
+                              )
+                            : Oas3Tools.formatOperationString(
+                                httpMethod,
+                                callbackName,
+                                oas.info.title
+                              )
+
+                        let callbackHttpMethod: Oas3Tools.HTTP_METHODS
+
+                        try {
+                          callbackHttpMethod =
+                            methodToHttpMethod(callbackRawMethod)
+                        } catch (e) {
+                          handleWarning({
+                            mitigationType: MitigationTypes.INVALID_HTTP_METHOD,
+                            message: `Invalid HTTP method '${rawMethod}' in callback '${callbackOperationString}' in operation '${operationString}'`,
+                            data,
+                            log: preprocessingLog
+                          })
+
+                          return
+                        }
+
+                        const callbackOperation = processOperation(
+                          callbackExpression,
+                          callbackHttpMethod,
+                          callbackOperationString,
+                          GraphQLOperationType.Subscription,
+                          resolvedCallbackPathItem[callbackHttpMethod],
+                          callbackPathItem,
+                          oas,
+                          data,
+                          options
+                        )
+
+                        if (callbackOperation) {
+                          /**
+                           * Handle operationId property name collision
+                           * May occur if multiple OAS are provided
+                           */
+                          if (
+                            callbackOperation &&
+                            !(
+                              callbackOperation.operationId in
+                              data.callbackOperations
+                            )
+                          ) {
+                            data.callbackOperations[
+                              callbackOperation.operationId
+                            ] = callbackOperation
+                          } else {
+                            handleWarning({
+                              mitigationType:
+                                MitigationTypes.DUPLICATE_OPERATIONID,
+                              message: `Multiple OASs share callback operations with the same operationId '${callbackOperation.operationId}'`,
+                              mitigationAddendum: `The callback operation from the OAS '${operationData.oas.info.title}' will be ignored`,
+                              data,
+                              log: preprocessingLog
+                            })
+                          }
+                        }
                       }
                     }
-                  }
-                )
-              }
-            )
-          }
-        })
-    }
-  })
+                  )
+                }
+              )
+            }
+          })
+      }
+    })
+  )
 
   return data
 }
@@ -584,26 +603,26 @@ function getProcessedSecuritySchemes<TSource, TContext, TArgs>(
             }
             break
 
-            case 'bearer':
-              description = `Bearer auth credentials for security protocol '${schemeKey}'`
+          case 'bearer':
+            description = `Bearer auth credentials for security protocol '${schemeKey}'`
 
-              parameters = {
-                token: Oas3Tools.sanitize(
-                  `${schemeKey}_token`,
-                  Oas3Tools.CaseStyle.camelCase
-                )
-              }
+            parameters = {
+              token: Oas3Tools.sanitize(
+                `${schemeKey}_token`,
+                Oas3Tools.CaseStyle.camelCase
+              )
+            }
 
-              schema = {
-                type: 'object',
-                description,
-                properties: {
-                  token: {
-                    type: 'string'
-                  }
+            schema = {
+              type: 'object',
+              description,
+              properties: {
+                token: {
+                  type: 'string'
                 }
               }
-              break
+            }
+            break
 
           default:
             handleWarning({
@@ -729,18 +748,17 @@ export function createDataDef<TSource, TContext, TArgs>(
       Array.isArray(existingDataDef.subDefinitions)
     ) {
       existingDataDef.subDefinitions.forEach((def) => {
-          collapseLinksIntoDataDefinition({
-            additionalLinks: saneLinks,
-            existingDataDef: def,
-            data,
-          })
-        }
-      )
+        collapseLinksIntoDataDefinition({
+          additionalLinks: saneLinks,
+          existingDataDef: def,
+          data
+        })
+      })
     } else {
       collapseLinksIntoDataDefinition({
         additionalLinks: saneLinks,
         existingDataDef,
-        data,
+        data
       })
     }
 
@@ -773,7 +791,14 @@ export function createDataDef<TSource, TContext, TArgs>(
    * Recursively resolve allOf so type, properties, anyOf, oneOf, and
    * required are resolved
    */
-  const collapsedSchema = Oas3Tools.resolveAllOf(schema, {}, data, oas) as SchemaObject
+  let collapsedSchema = Oas3Tools.resolveAnyOf(schema) as SchemaObject
+
+  collapsedSchema = Oas3Tools.resolveAllOf(
+    collapsedSchema,
+    {},
+    data,
+    oas
+  ) as SchemaObject
 
   const targetGraphQLType = Oas3Tools.getSchemaTargetGraphQLType(
     collapsedSchema,
@@ -1326,6 +1351,7 @@ function getMemberSchemaData<TSource, TContext, TArgs>(
       data,
       oas
     )
+
     if (memberTargetGraphQLType) {
       result.allTargetGraphQLTypes.push(memberTargetGraphQLType)
     }

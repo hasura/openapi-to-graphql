@@ -530,6 +530,10 @@ function createOrReuseList<TSource, TContext, TArgs extends object>({
   // Get definition of the list item, which should be in the sub definitions
   const itemDef = def.subDefinitions as DataDefinition
 
+  if (!itemDef) {
+    return
+  }
+
   // Equivalent to schema.items
   const itemsSchema = itemDef.schema
   // Equivalent to `{name}ListItem`
@@ -585,39 +589,41 @@ function createOrReuseEnum<TSource, TContext, TArgs>({
     const extensionEnumMapping =
       def.schema[Oas3Tools.OAS_GRAPHQL_EXTENSIONS.EnumMapping] || {}
 
-    def.schema.enum.forEach((enumValue) => {
-      const enumValueString = enumValue.toString()
+    def.schema.enum
+      .filter((value) => value)
+      .forEach((enumValue) => {
+        const enumValueString = enumValue.toString()
 
-      const extensionEnumValue = extensionEnumMapping[enumValueString]
+        const extensionEnumValue = extensionEnumMapping[enumValueString]
 
-      if (!Oas3Tools.isSanitized(extensionEnumValue)) {
-        throw new Error(
-          `Cannot create enum value "${extensionEnumValue}".\nYou ` +
-            `provided "${extensionEnumValue}" in ` +
-            `${Oas3Tools.OAS_GRAPHQL_EXTENSIONS.EnumMapping}, but it is not ` +
-            `GraphQL-safe."`
-        )
-      }
+        if (!Oas3Tools.isSanitized(extensionEnumValue)) {
+          throw new Error(
+            `Cannot create enum value "${extensionEnumValue}".\nYou ` +
+              `provided "${extensionEnumValue}" in ` +
+              `${Oas3Tools.OAS_GRAPHQL_EXTENSIONS.EnumMapping}, but it is not ` +
+              `GraphQL-safe."`
+          )
+        }
 
-      const emumValue =
-        extensionEnumValue ||
-        Oas3Tools.sanitize(
-          enumValueString,
-          !data.options.simpleEnumValues
-            ? Oas3Tools.CaseStyle.ALL_CAPS
-            : Oas3Tools.CaseStyle.simple
-        )
+        const emumValue =
+          extensionEnumValue ||
+          Oas3Tools.sanitize(
+            enumValueString,
+            !data.options.simpleEnumValues
+              ? Oas3Tools.CaseStyle.ALL_CAPS
+              : Oas3Tools.CaseStyle.simple
+          )
 
-      if (extensionEnumValue in values) {
-        throw new Error(
-          `Cannot create enum value "${extensionEnumValue}".\nYou ` +
-            `provided "${extensionEnumValue}" in ` +
-            `${Oas3Tools.OAS_GRAPHQL_EXTENSIONS.EnumMapping}, but it ` +
-            `conflicts with another value "${extensionEnumValue}".`
-        )
-      }
-      values[emumValue] = { value: enumValue }
-    })
+        if (extensionEnumValue in values) {
+          throw new Error(
+            `Cannot create enum value "${extensionEnumValue}".\nYou ` +
+              `provided "${extensionEnumValue}" in ` +
+              `${Oas3Tools.OAS_GRAPHQL_EXTENSIONS.EnumMapping}, but it ` +
+              `conflicts with another value "${extensionEnumValue}".`
+          )
+        }
+        values[emumValue] = { value: enumValue }
+      })
 
     // Store newly created Enum Object Type
     def.graphQLType = new GraphQLEnumType({

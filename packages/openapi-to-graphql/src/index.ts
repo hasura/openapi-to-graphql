@@ -52,7 +52,7 @@ import {
   GraphQLSchema,
   GraphQLObjectType,
   GraphQLOutputType,
-  GraphQLFieldConfig,
+  GraphQLFieldConfig
 } from 'graphql'
 
 // Imports:
@@ -133,7 +133,11 @@ const DEFAULT_OPTIONS: InternalOptions<any, any, any> = {
 /**
  * Creates a GraphQL interface from the given OpenAPI Specification (2 or 3).
  */
-export async function createGraphQLSchema<TSource, TContext, TArgs extends object>(
+export async function createGraphQLSchema<
+  TSource,
+  TContext,
+  TArgs extends object
+>(
   spec: Oas3 | Oas2 | (Oas3 | Oas2)[],
   options?: Options<TSource, TContext, TArgs>
 ): Promise<Result<TSource, TContext, TArgs>> {
@@ -150,7 +154,8 @@ export async function createGraphQLSchema<TSource, TContext, TArgs extends objec
         Oas3Tools.getValidOAS3(
           ele,
           internalOptions.oasValidatorOptions,
-          internalOptions.swagger2OpenAPIOptions
+          internalOptions.swagger2OpenAPIOptions,
+          internalOptions.softValidation
         )
       )
     )
@@ -164,7 +169,8 @@ export async function createGraphQLSchema<TSource, TContext, TArgs extends objec
     const oas = await Oas3Tools.getValidOAS3(
       spec,
       internalOptions.oasValidatorOptions,
-      internalOptions.swagger2OpenAPIOptions
+      internalOptions.swagger2OpenAPIOptions,
+      internalOptions.softValidation
     )
     return translateOpenAPIToGraphQL([oas], internalOptions)
   }
@@ -173,7 +179,11 @@ export async function createGraphQLSchema<TSource, TContext, TArgs extends objec
 /**
  * Creates a GraphQL interface from the given OpenAPI Specification 3
  */
-export function translateOpenAPIToGraphQL<TSource, TContext, TArgs extends object>(
+export async function translateOpenAPIToGraphQL<
+  TSource,
+  TContext,
+  TArgs extends object
+>(
   oass: Oas3[],
   {
     strict,
@@ -216,7 +226,7 @@ export function translateOpenAPIToGraphQL<TSource, TContext, TArgs extends objec
 
     fetch
   }: InternalOptions<TSource, TContext, TArgs>
-): Result<TSource, TContext, TArgs> {
+): Promise<Result<TSource, TContext, TArgs>> {
   const options = {
     strict,
     report,
@@ -264,7 +274,7 @@ export function translateOpenAPIToGraphQL<TSource, TContext, TArgs extends objec
    * Extract information from the OASs and put it inside a data structure that
    * is easier for OpenAPI-to-GraphQL to use
    */
-  const data: PreprocessingData<TSource, TContext, TArgs> = preprocessOas(
+  const data: PreprocessingData<TSource, TContext, TArgs> = await preprocessOas(
     oass,
     options
   )
@@ -481,7 +491,7 @@ function addQueryFields<TSource, TContext, TArgs extends object>({
     singularNames,
     baseUrl,
     requestOptions,
-      fileUploadOptions,
+    fileUploadOptions,
     connectOptions,
     fetch
   } = options
@@ -660,7 +670,7 @@ function addMutationFields<TSource, TContext, TArgs extends object>({
     singularNames,
     baseUrl,
     requestOptions,
-      fileUploadOptions,
+    fileUploadOptions,
     connectOptions,
     fetch
   } = options
@@ -810,7 +820,8 @@ function addSubscriptionFields<TSource, TContext, TArgs extends object>({
   options: InternalOptions<TSource, TContext, TArgs>
   data: PreprocessingData<TSource, TContext, TArgs>
 }) {
-  const { baseUrl, requestOptions, connectOptions, fetch, fileUploadOptions } = options
+  const { baseUrl, requestOptions, connectOptions, fetch, fileUploadOptions } =
+    options
 
   const field = getFieldForOperation(
     operation,

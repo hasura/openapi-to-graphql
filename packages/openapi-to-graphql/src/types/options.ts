@@ -20,6 +20,7 @@ export type Warning = {
 }
 
 export type Report = {
+  validationErrors?: string[]
   warnings: Warning[]
   numOps: number
   numOpsQuery: number
@@ -335,6 +336,13 @@ export type InternalOptions<TSource, TContext, TArgs> = {
    */
   swagger2OpenAPIOptions: object
 
+  /**
+   * Determines how to perform validation of the OAS. If set to true, the
+   * process will throw an error and stop execution. If set to false, the
+   * process will return the error in the response and continue execution.
+   */
+  softValidation?: boolean
+
   // Logging options
 
   /**
@@ -346,6 +354,7 @@ export type InternalOptions<TSource, TContext, TArgs> = {
    *
    * This option prevents the extensions from being created.
    */
+
   provideErrorExtensions: boolean
 
   /**
